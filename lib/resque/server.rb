@@ -10,6 +10,7 @@ end
 
 module Resque
   class Server < Sinatra::Base
+
     dir = File.dirname(File.expand_path(__FILE__))
 
     set :views,  "#{dir}/server/views"
@@ -28,6 +29,10 @@ module Resque
 
       def current_section
         url_path request.path_info.sub('/','').split('/')[0].downcase
+      end
+      
+      def current_queue
+        current_section + '/' + @queue_name
       end
 
       def current_page
@@ -143,6 +148,26 @@ module Resque
       show(page.to_sym, false).gsub(/\s{1,}/, ' ')
     end
 
+    def queue_summary
+      Resque::Failure.all(0, Resque::Failure.count).inject({}) do |summary,fail| 
+        if fail['queue'] == @queue_name
+          summary[fail['exception']] ||= {:count => 0, :fails => []}
+          summary[fail['exception']][:count] += 1
+          summary[fail['exception']][:fails] << fail
+        end
+        summary
+      end
+    end
+
+    def failure_summary
+      Resque::Failure.all(0, Resque::Failure.count).inject({}) do |summary,fail| 
+        summary[fail['queue']] ||= {:count => 0, :fails => []}
+        summary[fail['queue']][:count] += 1
+        summary[fail['queue']][:fails] << fail
+        summary
+      end
+    end
+
     # to make things easier on ourselves
     get "/?" do
       redirect url_path(:overview)
@@ -177,13 +202,53 @@ module Resque
       if Resque::Failure.url
         redirect Resque::Failure.url
       else
+        @start          = params[:start].to_i
+        @failed         = Resque::Failure.all(@start, 20)
+        @total_fails    = Resque::Failure.count
+        @exception_list = failure_summary.collect { |queue, details| [queue, details[:count]] }
         show :failed
       end
+    end
+    
+    get "/failed/:queue_name" do
+      @queue_name     = URI.unescape(params[:queue_name])
+      @start          = params[:start].to_i || 0
+
+      @exception_list = queue_summary.collect { |exception, details| [exception, details[:count]] }
+      @total_fails    = queue_summary.values.inject(0) { |sum, queue| sum += queue[:count] }
+      @fails          = queue_summary.values.collect { |details| details[:fails] }.flatten.slice(@start,20)
+      show :fail_detail
+    end
+    
+    get "/failed/:queue_name/:exception" do
+      @queue_name     = URI.unescape(params[:queue_name])
+      @exception      = URI.unescape(params[:exception])
+      @start          = params[:start].to_i || 0
+
+      @exception_list = queue_summary.collect { |exception, details| [exception, details[:count]] }
+      @fails          = queue_summary[@exception][:fails].slice(@start,20)
+      @total_fails    = queue_summary[@exception][:count]
+      show :fail_detail
     end
 
     post "/failed/clear" do
       Resque::Failure.clear
       redirect u('failed')
+    end
+
+    post "/failed/clear/:queue_name" do
+      @queue_name = params[:queue_name]
+
+      Resque::Failure.remove_queue(@queue_name)
+      redirect u('failed/' + @queue_name)
+    end
+
+    post "/failed/clear/:queue_name/:exception" do
+      @queue_name = URI.unescape(params[:queue_name])
+      @exception  = URI.unescape(params[:exception])
+
+      Resque::Failure.remove_failure('queue' => @queue_name, 'exception' => @exception)
+      redirect u('failed/' + @queue_name)
     end
 
     post "/failed/requeue/all" do

@@ -92,5 +92,20 @@ module Resque
         end
       end
     end
+
+    # Removes all failed jobs matching criteria
+    # Queue name should be a string.
+    def self.remove_failure(options={})
+      opts = {'queue' => nil}.merge(options)
+      i=0
+      while job = Resque::Failure.all(i)
+        if (job.values_at(*opts.keys) == opts.values_at(*opts.keys))
+          # This will remove the failure from the array so do not increment the index.
+          Resque::Failure.remove(i)
+        else
+          i+=1    
+        end
+      end
+    end
   end
 end
